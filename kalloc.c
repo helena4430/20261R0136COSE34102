@@ -23,8 +23,6 @@ struct {
   struct run *freelist;
 } kmem;
 
-int num_free_pages;
-uint refcount[PHYSTOP >> PGSHIFT];
 
 struct {
   int num_free_pages;
@@ -47,10 +45,14 @@ kinit1(void *vstart, void *vend)
 void
 kinit2(void *vstart, void *vend)
 {
+  memset(pmem.refcount, 0,
+         sizeof(uint) * (PHYSTOP >> PGSHIFT));
+
+
+
   freerange(vstart, vend);
+
   kmem.use_lock = 1;
-  memset(&pmem.refcount, 0, sizeof(uint) * (PHYSTOP >> PGSHIFT));
-  pmem.num_free_pages = 0;
 }
 
 void
@@ -58,27 +60,47 @@ freerange(void *vstart, void *vend)
 {
   char *p;
   p = (char*)PGROUNDUP((uint)vstart);
-  for(; p + PGSIZE <= (char*)vend; p += PGSIZE)
+  for(; p + PGSIZE <= (char*)vend; p += PGSIZE){
     kfree(p);
+};
 }
 //PAGEBREAK: 21
 // Free the page of physical memory pointed at by v,
 // which normally should have been returned by a
 // call to kalloc().  (The exception is when
 // initializing the allocator; see kinit above.)
+
 void
 kfree(char *v)
 {
   struct run *r;
+  uint pa;
 
   if((uint)v % PGSIZE || v < end || V2P(v) >= PHYSTOP)
     panic("kfree");
 
-  // Fill with junk to catch dangling refs.
-  memset(v, 1, PGSIZE);
+  pa = V2P(v);
 
   if(kmem.use_lock)
     acquire(&kmem.lock);
+
+  // during initialization
+  if(kmem.use_lock == 0){
+    pmem.refcount[pa >> PGSHIFT] = 0;
+  }
+  else{
+    if(get_refcount(pa) < 1)
+      panic("kfree ref");
+
+    dec_refcount(pa);
+
+    if(get_refcount(pa) > 0){
+      release(&kmem.lock);
+      return;
+    }
+  }
+
+  memset(v, 1, PGSIZE);
 
   r = (struct run*)v;
   r->next = kmem.freelist;
@@ -88,8 +110,10 @@ kfree(char *v)
 
   if(kmem.use_lock)
     release(&kmem.lock);
-
 }
+
+
+
 
 // Allocate one 4096-byte page of physical memory.
 // Returns a pointer that the kernel can use.

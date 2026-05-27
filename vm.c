@@ -341,7 +341,8 @@ copyuvm(pde_t *pgdir, uint sz)
       goto bad;
     }
   }
-  lcr3(V2P(pgdir));
+ lcr3(V2P(pgdir));
+
   return d;
 
 bad:
@@ -394,10 +395,55 @@ void
 page_fault(void)
 {
   uint va = rcr2();
-  if(va < 0) {
-    panic("Invalid access");
+
+  //page boundary align
+  va = PGROUNDDOWN(va);
+
+  struct proc *p = myproc();
+
+  pte_t *pte;
+  pte = walkpgdir(p->pgdir, (void*)va, 0);
+
+  //invalid page access
+  
+  // invalid page access
+  if(pte == 0 || !(*pte & PTE_P)){
+   // cprintf("Segmentation Fault\n");
+    p->killed = 1;
     return;
+}
+
+  uint pa = PTE_ADDR(*pte);
+
+  // shared page -> real copy needed
+  if(get_refcount(pa) > 1){
+
+    char *mem;
+
+    mem = kalloc();
+
+    if(mem == 0){
+      panic("kalloc failed");
+      return;
+    }
+
+    // copy original page contents
+    memmove(mem, (char*)P2V(pa), PGSIZE);
+
+    // old shared page refcount decrease
+    dec_refcount(pa);
+
+    *pte = V2P(mem) | (PTE_FLAGS(*pte) | PTE_W);
+
   }
+  else{
+    // already private page
+    // just restore writable permission
+    *pte |= PTE_W;
+  }
+
+  // flush TLB
+  lcr3(V2P(p->pgdir));
   
   return;
 }
